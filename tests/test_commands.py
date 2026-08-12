@@ -60,3 +60,18 @@ def test_commands_registry_round_trips_through_run_named() -> None:
     for name, spec in COMMANDS.items():
         assert get_command(name) is spec
         assert callable(spec.runner)
+
+
+def test_next_free_route_id_picks_smallest_unused_slot() -> None:
+    from ligpsport.commands import _next_free_route_id
+
+    # Empty device → slot 1.
+    assert _next_free_route_id(set()) == 1
+    # Slot 1 taken → slot 2.
+    assert _next_free_route_id({1}) == 2
+    # Gaps are filled before extending the range.
+    assert _next_free_route_id({1, 3, 4}) == 2
+    # Contiguous run → next after the max.
+    assert _next_free_route_id({1, 2, 3}) == 4
+    # Non-contiguous existing ids don't perturb the search from 1.
+    assert _next_free_route_id({7, 42}) == 1

@@ -498,6 +498,34 @@ class RouteSummaryList:
         return "\n".join(r.format() for r in self.entries)
 
 
+async def _fetch_existing_route_ids(
+    client: _client.IgpsportClient,
+    timeout: float,
+) -> set[int]:
+    """Query the device for the set of currently-used route plan slot ids.
+
+    Shared by ``upload-route`` (to auto-pick a free slot) and any other
+    caller that needs to avoid clobbering an existing route.
+    """
+    request = route_plan_pb2.route_plan_data_msg()
+    request.route_plan_operate_type = route_plan_pb2.enum_ROUTE_PLAN_OPERATE_TYPE_LIST_GET
+    request.route_list_get_msg.file_index_start = 0
+    request.route_list_get_msg.file_index_end = 100
+    response = await client.request(request, timeout=timeout)
+    msg = response.message
+    if not isinstance(msg, route_plan_pb2.route_plan_data_msg):
+        raise CommandError(f"unexpected response message: {type(msg).__name__}")
+    return {int(r.id) for r in msg.route_plan_info_msg}
+
+
+def _next_free_route_id(existing: set[int]) -> int:
+    """Smallest positive integer not in *existing*."""
+    candidate = 1
+    while candidate in existing:
+        candidate += 1
+    return candidate
+
+
 async def _r_list_routes(
     _spec: CommandSpec,
     client: _client.IgpsportClient,
@@ -1268,12 +1296,18 @@ async def _r_upload_route(
     if not positional:
         raise CommandError("upload-route takes <path> [file_id] [format=...] [start]")
     path = positional[0]
-    file_id = 1
+    file_id: int | None = None
     if len(positional) >= 2:
         try:
             file_id = int(positional[1])
         except ValueError as exc:
             raise CommandError(f"invalid file_id: {positional[1]!r}") from exc
+    if file_id is None:
+        # No explicit id: pick the smallest unused slot so a fresh
+        # upload doesn't clobber an existing route. Pass an explicit
+        # file_id to overwrite a specific slot.
+        existing = await _fetch_existing_route_ids(client, timeout=timeout)
+        file_id = _next_free_route_id(existing)
 
     p = pathlib.Path(path)
     ext = p.suffix.lower().lstrip(".")
@@ -1638,10 +1672,12 @@ COMMANDS: Final[Mapping[str, CommandSpec]] = {
         name="upload-route",
         description=(
             "Upload a GPX / geoJSON / CNX / FIT route file (GPX & geoJSON "
-            "are converted to CNX locally). Append 'start' to also "
-            "activate the route (FILE_USE → starts navigation on the "
-            "device). Syntax: upload-route <path> [file_id] "
-            "[format=gpx|fit|cnx] [start]"
+            "are converted to CNX locally). Without an explicit file_id, "
+            "the smallest unused slot on the device is chosen so existing "
+            "routes are not overwritten. Append 'start' to also activate "
+            "the route (FILE_USE → starts navigation on the device). "
+            "Syntax: upload-route <path> [file_id] [format=gpx|fit|cnx] "
+            "[start]"
         ),
         runner=_r_upload_route,
     ),
