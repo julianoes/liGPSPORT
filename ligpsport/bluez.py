@@ -102,6 +102,27 @@ async def _wait_writable(loop: asyncio.AbstractEventLoop, fd: int) -> None:
             loop.remove_writer(fd)
 
 
+def _is_dbus_fast_reader_eof(context: dict[str, object]) -> bool:
+    """True when *context* describes the benign dbus-fast reader EOF.
+
+    dbus-fast (>=2.x with the compiled Cython reader) sets an EOFError on
+    an internal future when the DBus socket closes during teardown. The
+    future has no awaiter at that moment, so asyncio surfaces a
+    "Future exception was never retrieved" message at GC time. The
+    upload has already succeeded by then, so we filter just this one
+    case rather than silencing the loop's whole exception channel.
+    """
+    exc = context.get("exception")
+    if not isinstance(exc, EOFError):
+        return False
+    tb = exc.__traceback__
+    while tb is not None:
+        if "dbus_fast" in (tb.tb_frame.f_code.co_filename or ""):
+            return True
+        tb = tb.tb_next
+    return False
+
+
 class BluezTransport(Transport):
     """BLE transport that drives BlueZ via DBus directly.
 
@@ -194,6 +215,23 @@ class BluezTransport(Transport):
         # that only use LoopbackTransport (tests) should not pay for it.
         from dbus_fast import BusType  # type: ignore[import-not-found]
         from dbus_fast.aio import MessageBus  # type: ignore[import-not-found]
+
+        # Wrap the loop's exception handler so the benign dbus-fast
+        # reader EOFError doesn't surface to the user. The wrapped
+        # handler stays installed for the rest of the loop's lifetime —
+        # see close() for the rationale.
+        loop = asyncio.get_running_loop()
+        prev_handler = loop.get_exception_handler()
+
+        def _filter(loop: asyncio.AbstractEventLoop, context: dict[str, object]) -> None:
+            if _is_dbus_fast_reader_eof(context):
+                return
+            if prev_handler is None:
+                loop.default_exception_handler(context)
+            else:
+                prev_handler(loop, context)
+
+        loop.set_exception_handler(_filter)
 
         # negotiate_unix_fd=True is mandatory — AcquireWrite /
         # AcquireNotify return file descriptors over DBus, and without
@@ -294,11 +332,16 @@ class BluezTransport(Transport):
             with contextlib.suppress(Exception):
                 await self._device_iface.call_disconnect()  # type: ignore[attr-defined]
             self._device_iface = None
-        # Disconnect the bus.
         if self._bus is not None:
             with contextlib.suppress(Exception):
                 self._bus.disconnect()  # type: ignore[attr-defined]
             self._bus = None
+        # Note: the loop exception handler installed by open() stays in
+        # place. It only filters dbus-fast EOFError, and the
+        # "Future exception was never retrieved" warning can fire after
+        # close() returns (during async-with exit / asyncio.run cleanup).
+        # Restoring the previous handler eagerly would re-introduce the
+        # warning we just suppressed.
         # Wake up any pending receivers.
         await self._inbox.put(None)
 
