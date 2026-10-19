@@ -64,6 +64,8 @@
                 ps.types-protobuf
                 ps.dbus-fast
                 ps.fitparse
+                # Only ligpsport/gui.py imports it; mypy needs the Qt types.
+                ps.pyside6
               ]))
             ];
             src = ./.;
@@ -129,6 +131,7 @@
               ps.dbus-fast
               ps.fitparse
               ps.mypy
+              ps.pyside6
             ]))
             pkgs.ruff
             pkgs.protobuf

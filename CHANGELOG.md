@@ -6,6 +6,25 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- ``ligpsport-gui``: a small Qt (PySide6) desktop app for Linux and
+  macOS. Scans for bike computers on startup; pick one to download
+  activities as ``.fit`` files and upload / delete routes (drag and
+  drop works too). Install with ``pip install 'ligpsport[gui]'``;
+  ``--simulator`` shows two fake devices for trying it without
+  hardware. Saved activities are named after the local start time
+  from the listing (``20261020T081500.fit``, as in the Android app)
+  so the app can tell which ones are already downloaded without
+  fetching them.
+- ``ligpsport.session.DeviceSession``: a long-lived, self-healing
+  connection to one device for interactive front-ends. Retries an
+  unanswered ``LIST_GET`` (5 s, 15 s, 25 s): the first one after a
+  connect is routinely never answered by a BSC200.
+- ``ActivityFile.started_at`` / ``default_filename()``,
+  ``RoutePlan.is_active`` / ``kind``, ``BleakTransport.mtu``.
+- ``simulator.SimulatedTransport``: a transport with a simulator
+  behind it, usable anywhere a BLE transport is.
+
 ## [1.5.2] — 2026-08-13
 
 Toolchain release: the strict mypy gate is green for the first time

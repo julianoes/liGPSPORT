@@ -17,8 +17,12 @@ dependencies = [
     "fitparse",
 ]
 
+[project.optional-dependencies]
+gui = ["PySide6>=6.5"]
+
 [project.scripts]
 ligpsport = "ligpsport.__main__:main"
+ligpsport-gui = "ligpsport.gui:main"
 
 [tool.setuptools.packages.find]
 include = ["ligpsport*"]

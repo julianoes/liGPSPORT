@@ -99,6 +99,30 @@ nix run . -- command --name bike --json version
 nix run . -- discover --json
 ```
 
+## Desktop app
+
+A small Qt app for the everyday jobs: download activities, upload
+routes. Works on Linux and macOS.
+
+```sh
+pip install '.[gui]'          # pulls in PySide6
+ligpsport-gui                 # scans for bike computers on startup
+ligpsport-gui --simulator     # two fake devices, no hardware needed
+ligpsport-gui --backend bluez # Linux: BlueZ DBus backend instead of bleak
+```
+
+Pick a device on the left; the header shows its address and the
+negotiated BLE MTU (23 would mean slow transfers). **Activities**
+lists recorded activities; download the selected ones or every one
+not yet in the download folder. Files are named after the local start
+time, e.g. `20261020T081500.fit`. **Routes** lists route slots;
+upload GPX / geoJSON / CNX / FIT files via the button or by dropping
+them on the list, optionally starting navigation, and delete routes
+(with a confirmation prompt).
+
+On macOS, the app launching it (e.g. Terminal) needs Bluetooth
+permission under System Settings → Privacy & Security.
+
 ## Library API
 
 ```python
