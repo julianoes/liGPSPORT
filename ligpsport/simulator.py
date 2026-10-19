@@ -41,7 +41,13 @@ from .proto import (
     sensor_pb2,
     user_config_pb2,
 )
-from .transport import Channel, LoopbackTransport, Transport, TransportClosed
+from .transport import (
+    Channel,
+    LoopbackTransport,
+    Transport,
+    TransportClosed,
+    make_loopback_pair,
+)
 
 _LOG = logging.getLogger(__name__)
 
@@ -1002,3 +1008,32 @@ class Simulator:
             )
         )
         await self._transport.send(ack)
+
+
+class SimulatedTransport(Transport):
+    """Client-side transport with a :class:`Simulator` running behind it.
+
+    Drop-in for a BLE transport: entering the context starts the
+    simulator on the far end of a loopback pair, leaving it stops the
+    simulator. Lets interactive front-ends (``ligpsport-gui
+    --simulator``) run end-to-end without hardware. *state* is shared,
+    so uploads and deletes persist across reconnects.
+    """
+
+    def __init__(self, state: SimulatorState) -> None:
+        self._client_end, peer_end = make_loopback_pair()
+        self._sim = Simulator(peer_end, state)
+
+    async def __aenter__(self) -> SimulatedTransport:
+        await self._sim.__aenter__()
+        return self
+
+    async def send(self, frame: bytes, *, channel: Channel = "control") -> None:
+        await self._client_end.send(frame, channel=channel)
+
+    async def receive(self) -> bytes:
+        return await self._client_end.receive()
+
+    async def close(self) -> None:
+        await self._client_end.close()
+        await self._sim.__aexit__(None, None, None)

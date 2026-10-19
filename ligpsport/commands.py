@@ -14,6 +14,7 @@ default. See ``AGENTS.md`` §2 for the policy.
 from __future__ import annotations
 
 import dataclasses
+import datetime as _dt
 import json
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Final, Protocol, runtime_checkable
@@ -291,6 +292,25 @@ class ActivityFile:
     file_size: int
     user_id: str
     device_id: str
+
+    @property
+    def started_at(self) -> _dt.datetime:
+        """Activity start as a naive datetime in the device's local wall-clock.
+
+        The listing timestamp is local time encoded as Garmin-epoch
+        seconds (see ``_r_download_all_activities``), so no timezone
+        is attached. Matches the companion Android app's reading.
+        """
+        return _dt.datetime(1989, 12, 31) + _dt.timedelta(seconds=self.timestamp)
+
+    def default_filename(self) -> str:
+        """Filename derivable from the listing alone, e.g. ``20261020T081500.fit``.
+
+        Unlike :func:`fit_activity.activity_filename_from_meta` this
+        needs no download, so a front-end can tell which activities
+        are already saved. Same scheme as the Android app.
+        """
+        return self.started_at.strftime("%Y%m%dT%H%M%S") + ".fit"
 
     def to_dict(self) -> dict[str, object]:
         return dataclasses.asdict(self)
@@ -798,6 +818,15 @@ class RoutePlan:
     file_type: int  # ROUTE_PLAN_FILE_TYPE (CNX=1, GPX=2, FIT=3, TCX=4, XML=5...)
     total_distance: int
     status: int
+
+    @property
+    def is_active(self) -> bool:
+        """True for the route the device is currently navigating."""
+        return self.status == route_plan_pb2.enum_USED_STATUS
+
+    @property
+    def kind(self) -> str:
+        return {1: "CNX", 2: "GPX", 3: "FIT", 4: "TCX"}.get(self.file_type, str(self.file_type))
 
     def to_dict(self) -> dict[str, object]:
         return dataclasses.asdict(self)

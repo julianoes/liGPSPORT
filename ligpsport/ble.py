@@ -189,6 +189,11 @@ class BleakTransport(Transport):
             raise TransportClosed("BLE link closed")
         return frame
 
+    @property
+    def mtu(self) -> int:
+        """ATT MTU bleak reports for the open link (23 until connected)."""
+        return self._mtu()
+
     def _mtu(self) -> int:
         if self._client is None:
             return self._DEFAULT_MTU
