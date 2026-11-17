@@ -19,3 +19,7 @@ __pycache__/
 # Raw Android bugreport dumps (used to recover the snoop log; never
 # tracked — they're huge and contain a full device state snapshot).
 /bugreport*.zip
+
+# PyInstaller / macOS app bundle output
+/build/
+/dist/
