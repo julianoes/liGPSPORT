@@ -16,6 +16,9 @@ the project adheres to [Semantic Versioning](https://semver.org/).
   from the listing (``20261020T081500.fit``, as in the Android app)
   so the app can tell which ones are already downloaded without
   fetching them.
+- macOS app bundle for Apple Silicon: ``liGPSPORT.app`` with Python
+  and dependencies inside, built by PyInstaller in CI and published
+  as a ``.dmg`` workflow artifact. Ad-hoc signed only, not notarized.
 - ``ligpsport.session.DeviceSession``: a long-lived, self-healing
   connection to one device for interactive front-ends. Retries an
   unanswered ``LIST_GET`` (5 s, 15 s, 25 s): the first one after a

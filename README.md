@@ -123,6 +123,47 @@ them on the list, optionally starting navigation, and delete routes
 On macOS, the app launching it (e.g. Terminal) needs Bluetooth
 permission under System Settings → Privacy & Security.
 
+### macOS app bundle (Apple Silicon)
+
+CI builds `liGPSPORT.app` with Python and all dependencies inside and
+uploads it as a `.dmg` artifact (`liGPSPORT-macos-arm64`) on every
+push and PR.
+
+The app is only ad-hoc signed, not notarized. A browser download
+marks the zip as quarantined, and on macOS 26 "Open Anyway" under
+Privacy & Security does not recover from that: the app bounces in
+the Dock forever, stuck before it even starts. So strip the
+quarantine flag right after downloading, before opening anything:
+
+```sh
+cd ~/Downloads
+xattr -c liGPSPORT-macos-arm64.zip     # or the .dmg, if Safari unzipped it
+rm -rf ligps && ditto -x -k liGPSPORT-macos-arm64.zip ligps
+rm -rf /Applications/liGPSPORT.app
+hdiutil attach ligps/*.dmg -nobrowse -mountpoint /tmp/ligps-mnt
+cp -R /tmp/ligps-mnt/liGPSPORT.app /Applications/
+hdiutil detach /tmp/ligps-mnt
+open /Applications/liGPSPORT.app
+```
+
+If the app already hangs at launch, the failed "Open Anyway" has left
+macOS's launch-approval daemon stuck, and it keeps holding every
+launch of the app, even a fresh copy without the quarantine flag.
+Restart the daemon (or reboot), then launch again:
+
+```sh
+sudo killall syspolicyd
+```
+
+macOS then asks for Bluetooth permission on the first scan. To build
+the bundle locally on a Mac:
+
+```sh
+pip install '.[gui]' pyinstaller
+python packaging/macos/make_icon.py build/macos/ligpsport.icns
+pyinstaller --noconfirm packaging/macos/ligpsport-gui.spec   # dist/liGPSPORT.app
+```
+
 ## Library API
 
 ```python
