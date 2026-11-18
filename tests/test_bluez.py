@@ -22,7 +22,7 @@ def _split(data: bytes, chunk: int) -> list[bytes]:
 def test_reassembly_single_chunk() -> None:
     transport = BluezTransport(address="00:11:22:33:44:55")
     wire = build_frame(Frame(service=10, operation=2, payload=b"hello"))
-    transport._on_chunk(wire)
+    transport._on_chunk("control", wire)
     # The reassembled frame ends up in the inbox without blocking.
     assert transport._inbox.qsize() == 1
 
@@ -31,7 +31,7 @@ def test_reassembly_multi_chunk() -> None:
     transport = BluezTransport(address="00:11:22:33:44:55")
     wire = build_frame(Frame(service=17, operation=2, payload=b"\x00" * 200))
     for chunk in _split(wire, chunk=64):
-        transport._on_chunk(chunk)
+        transport._on_chunk("control", chunk)
     assert transport._inbox.qsize() == 1
 
 
@@ -39,7 +39,7 @@ def test_reassembly_two_frames() -> None:
     transport = BluezTransport(address="00:11:22:33:44:55")
     first = build_frame(Frame(service=10, operation=2, payload=b"first"))
     second = build_frame(Frame(service=17, operation=2, payload=b"second"))
-    transport._on_chunk(first + second)
+    transport._on_chunk("control", first + second)
     assert transport._inbox.qsize() == 2
 
 

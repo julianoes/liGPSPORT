@@ -740,7 +740,9 @@ class Simulator:
             head[off] = 0xFF
         head[framing.HDR_HEADER_CRC] = framing.crc8(bytes(head[: framing.HDR_HEADER_CRC]))
         wire = bytes(head) + len(pb_bytes).to_bytes(4, "big") + pb_bytes + file_bytes
-        await self._transport.send(wire)
+        # The BSC200 streams the download on the third TX (…-7e), the
+        # channel the request came in on (PROTOCOL.md §1).
+        await self._transport.send(wire, channel="third")
 
     @staticmethod
     def _match_route_chunk(chunk: bytes, header: bytes) -> tuple[int, int] | None:

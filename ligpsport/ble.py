@@ -3,7 +3,8 @@
 The BleakTransport opens a GATT connection to the BSC200, locates the
 primary Nordic-UART service by UUID, subscribes to TX notifications,
 and reassembles incoming MTU-sized chunks into whole framing-layer
-frames using the ``payload_size`` field from the 20-byte header.
+frames using the ``payload_size`` field from the 20-byte header, with
+one buffer per channel (see :mod:`ligpsport.reassembly`).
 
 Outgoing frames are split into MTU-sized chunks the BLE stack can
 write in one operation. The BSC200 negotiates an MTU during connect
@@ -26,9 +27,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Final
 
-from . import framing, gatt
+from . import gatt
+from .reassembly import TX_UUIDS, FrameReassembler
 from .transport import Channel, Transport, TransportClosed
 
 # Channel → write characteristic UUID. Matches BluezTransport's
@@ -69,9 +72,8 @@ class BleakTransport(Transport):
         self._address = address
         self._client: object | None = None  # bleak.BleakClient at runtime
         self._inbox: asyncio.Queue[bytes | None] = asyncio.Queue()
-        # Reassembly buffer for TX notification chunks.
-        self._rx_buf = bytearray()
-        self._rx_expected: int | None = None
+        # Reassembly of TX notification chunks, one buffer per channel.
+        self._reassembler = FrameReassembler()
         self._closed = False
 
     @property
@@ -119,16 +121,11 @@ class BleakTransport(Transport):
         # Control RX (8e) but emits responses on the Data TX (9e), and
         # may use 6e/7e for parallel file/firmware streams. Subscribing
         # to all four covers every observed reply path with no false
-        # positives — each notify is the prefix of a logical frame and
-        # the reassembly buffer is shared across channels.
-        for tx_uuid in (
-            gatt.PRIMARY_TX_UUID,
-            gatt.DATA_TX_UUID,
-            gatt.THIRD_TX_UUID,
-            gatt.FOURTH_TX_UUID,
-        ):
+        # positives. Each channel is reassembled separately, so the
+        # callback is bound to the channel it was registered for.
+        for channel, tx_uuid in TX_UUIDS.items():
             with contextlib.suppress(Exception):
-                await client.start_notify(tx_uuid, self._on_notify)
+                await client.start_notify(tx_uuid, self._notify_callback(channel))
         self._client = client
         _LOG.info("connected to %s; MTU=%d", self._address, self._mtu())
 
@@ -139,12 +136,7 @@ class BleakTransport(Transport):
         client = self._client
         self._client = None
         if client is not None:
-            for tx_uuid in (
-                gatt.PRIMARY_TX_UUID,
-                gatt.DATA_TX_UUID,
-                gatt.THIRD_TX_UUID,
-                gatt.FOURTH_TX_UUID,
-            ):
+            for tx_uuid in TX_UUIDS.values():
                 with contextlib.suppress(Exception):
                     await client.stop_notify(tx_uuid)  # type: ignore[attr-defined]
             with _suppress_errors():
@@ -198,43 +190,20 @@ class BleakTransport(Transport):
             return self._DEFAULT_MTU
         return value if value > 0 else self._DEFAULT_MTU
 
-    def _on_notify(self, _char: object, data: bytearray) -> None:
-        """Reassemble incoming TX chunks into whole logical frames."""
-        self._rx_buf.extend(data)
-        while True:
-            if self._rx_expected is None:
-                if len(self._rx_buf) < framing.HEADER_SIZE:
-                    return  # not enough yet to learn total frame size
-                head = bytes(self._rx_buf[: framing.HEADER_SIZE])
-                try:
-                    self._rx_expected = framing.expected_total_size(head)
-                except framing.FrameError as exc:
-                    _LOG.warning("malformed header; dropping buffer: %s", exc)
-                    self._rx_buf.clear()
-                    return
-                if self._rx_expected is None:
-                    # Transmit-complete download stream (file_tag=0x55).
-                    # The head's payload_size is bogus; the actual length
-                    # comes from the embedded file_download protobuf.
-                    try:
-                        total = framing.transmit_complete_total_size(bytes(self._rx_buf))
-                    except framing.FrameError as exc:
-                        _LOG.warning("malformed transmit-complete head: %s", exc)
-                        self._rx_buf.clear()
-                        return
-                    if total is None:
-                        return  # need more bytes to learn the size
-                    self._rx_expected = total
-            assert self._rx_expected is not None
-            if len(self._rx_buf) < self._rx_expected:
-                return  # wait for more chunks
-            frame_bytes = bytes(self._rx_buf[: self._rx_expected])
-            del self._rx_buf[: self._rx_expected]
-            self._rx_expected = None
-            # Hand the assembled frame to whoever is awaiting receive().
-            # The notification arrives on the event loop, so put_nowait
-            # is safe (and avoids creating a task per frame).
-            self._inbox.put_nowait(frame_bytes)
+    def _notify_callback(self, channel: Channel) -> Callable[[object, bytearray], None]:
+        """Return a bleak notify callback that feeds *channel*'s buffer."""
+
+        def _callback(_char: object, data: bytearray) -> None:
+            self._on_notify(channel, data)
+
+        return _callback
+
+    def _on_notify(self, channel: Channel, data: bytes | bytearray) -> None:
+        """Reassemble TX chunks from *channel* into whole logical frames."""
+        # The notification arrives on the event loop, so put_nowait is
+        # safe (and avoids creating a task per frame).
+        for frame in self._reassembler.feed(channel, bytes(data)):
+            self._inbox.put_nowait(frame)
 
 
 class _suppress_errors:

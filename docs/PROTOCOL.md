@@ -35,8 +35,11 @@ issues writes to its RX characteristic. The BSC200 quirk: it does
 Data channel's TX characteristic (`9e`), and various unsolicited
 notifications (e.g. the AGPS ephemeris request, see §2.4) arrive on
 the control channel's TX. The library subscribes to TX on all four
-channels and reassembles by header — the reassembly buffer is
-per-frame, not per-channel.
+channels and reassembles by header, with one reassembly buffer per
+channel. The buffers must be separate. An activity download streams
+on the third channel for tens of seconds, and the AGPS request keeps
+arriving on the control channel during it. With a shared buffer, that
+request ends up inside the FIT data.
 
 The third channel (`7e`) carries the CYCLING_DATA service's
 list / download / delete traffic on gen-3+ devices (see §6.4 and
@@ -141,8 +144,10 @@ Python `framing.crc8` function matches byte for byte.
 Logical messages longer than the BLE MTU are split into MTU-sized
 chunks at the GATT layer. The receiver concatenates chunks until it
 has `expected_total_size(header)` bytes in hand, then validates
-`header_crc` (and `payload_crc` for `TYPE_PB` frames). The library's
-`BleakTransport` implements this reassembly loop and is type-aware
+`header_crc` (and `payload_crc` for `TYPE_PB` frames). Chunks are
+only ever concatenated with chunks from the same TX characteristic
+(§1). The library's `ligpsport.reassembly.FrameReassembler`
+implements this, separately for each channel, and is type-aware
 (`TYPE_CONFIRM` / `TYPE_REQUEST` always equal `HEADER_SIZE`; only
 `TYPE_PB` reads bytes 7-8 as a size field).
 

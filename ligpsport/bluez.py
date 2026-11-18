@@ -43,7 +43,8 @@ import logging
 import os
 from typing import TYPE_CHECKING, Any, Final
 
-from . import framing, gatt
+from . import gatt
+from .reassembly import TX_UUIDS, FrameReassembler
 from .transport import Channel, Transport, TransportClosed
 
 if TYPE_CHECKING:
@@ -58,16 +59,6 @@ DEVICE_IFACE: Final[str] = "org.bluez.Device1"
 GATT_SERVICE_IFACE: Final[str] = "org.bluez.GattService1"
 GATT_CHAR_IFACE: Final[str] = "org.bluez.GattCharacteristic1"
 DBUS_OM_IFACE: Final[str] = "org.freedesktop.DBus.ObjectManager"
-
-# We subscribe TX on every UART channel — the BSC200 writes responses
-# on the data channel (9e) even though we drive writes on the control
-# channel (8e). See PROTOCOL.md §1.
-TX_UUIDS: Final[tuple[str, ...]] = (
-    gatt.PRIMARY_TX_UUID,
-    gatt.DATA_TX_UUID,
-    gatt.THIRD_TX_UUID,
-    gatt.FOURTH_TX_UUID,
-)
 
 # Channel → write characteristic UUID. The Transport ABC accepts three
 # channels; we map them onto the same RX UUIDs the iGPSPORT app uses.
@@ -177,10 +168,9 @@ class BluezTransport(Transport):
       :meth:`send` uses as the chunk size.
     * ``close()`` — close every FD, ``Disconnect()`` the device.
 
-    The reassembly buffer is shared across all four TX channels: a
-    frame can begin on one channel and continue on another if the
-    device chooses, though in practice the BSC200 keeps each frame
-    on a single channel.
+    Each TX channel is reassembled in its own buffer (see
+    :mod:`ligpsport.reassembly`): an activity download on one channel
+    must not absorb an unsolicited frame arriving on another.
     """
 
     def __init__(self, address: str, *, adapter: str = "hci0") -> None:
@@ -201,10 +191,8 @@ class BluezTransport(Transport):
         # Inbox: complete reassembled frames.
         self._inbox: asyncio.Queue[bytes | None] = asyncio.Queue()
         self._closed = False
-        # Reassembly buffer + expected total. Shared across channels —
-        # see class docstring.
-        self._rx_buf = bytearray()
-        self._rx_expected: int | None = None
+        # Per-channel reassembly — see class docstring.
+        self._reassembler = FrameReassembler()
 
     @property
     def address(self) -> str:
@@ -219,8 +207,8 @@ class BluezTransport(Transport):
         """Negotiated MTU of *channel*, or 23 if the channel is not yet acquired."""
         return self._write_mtus.get(channel, 23)
 
-    def _register_reader(self, fd: int) -> None:
-        """Hook *fd* into the asyncio event loop for readability."""
+    def _register_reader(self, fd: int, channel: Channel) -> None:
+        """Hook *channel*'s notify *fd* into the asyncio event loop."""
         loop = asyncio.get_running_loop()
 
         def _on_readable() -> None:
@@ -239,7 +227,7 @@ class BluezTransport(Transport):
                 _LOG.debug("BlueZ: fd=%d closed by peer", fd)
                 loop.remove_reader(fd)
                 return
-            self._on_chunk(data)
+            self._on_chunk(channel, data)
 
         loop.add_reader(fd, _on_readable)
 
@@ -292,7 +280,7 @@ class BluezTransport(Transport):
         await self._acquire_write_channel("control")
 
         # AcquireNotify on every TX characteristic that exists.
-        for tx_uuid in TX_UUIDS:
+        for channel, tx_uuid in TX_UUIDS.items():
             tx_path = chars_by_uuid.get(tx_uuid)
             if tx_path is None:
                 _LOG.debug("BlueZ: skipping unavailable TX %s", tx_uuid)
@@ -315,7 +303,7 @@ class BluezTransport(Transport):
             # Register the FD with the event loop. BlueZ marks the
             # socket non-blocking, so we use add_reader rather than
             # spawning a thread for a blocking read.
-            self._register_reader(dup_fd)
+            self._register_reader(dup_fd, channel)
 
         if not self._notify_fds:
             raise BluezError("no TX notification FDs could be acquired")
@@ -508,34 +496,7 @@ class BluezTransport(Transport):
                 out[uuid.lower()] = path
         return out
 
-    def _on_chunk(self, data: bytes) -> None:
-        """Reassembly loop — identical to BleakTransport._on_notify."""
-        self._rx_buf.extend(data)
-        while True:
-            if self._rx_expected is None:
-                if len(self._rx_buf) < framing.HEADER_SIZE:
-                    return
-                head = bytes(self._rx_buf[: framing.HEADER_SIZE])
-                try:
-                    self._rx_expected = framing.expected_total_size(head)
-                except framing.FrameError as exc:
-                    _LOG.warning("BlueZ: dropping malformed header: %s", exc)
-                    self._rx_buf.clear()
-                    return
-                if self._rx_expected is None:
-                    try:
-                        total = framing.transmit_complete_total_size(bytes(self._rx_buf))
-                    except framing.FrameError as exc:
-                        _LOG.warning("BlueZ: malformed transmit-complete head: %s", exc)
-                        self._rx_buf.clear()
-                        return
-                    if total is None:
-                        return
-                    self._rx_expected = total
-            assert self._rx_expected is not None
-            if len(self._rx_buf) < self._rx_expected:
-                return
-            frame_bytes = bytes(self._rx_buf[: self._rx_expected])
-            del self._rx_buf[: self._rx_expected]
-            self._rx_expected = None
-            self._inbox.put_nowait(frame_bytes)
+    def _on_chunk(self, channel: Channel, data: bytes) -> None:
+        """Reassemble one notification from *channel* into whole frames."""
+        for frame in self._reassembler.feed(channel, data):
+            self._inbox.put_nowait(frame)
