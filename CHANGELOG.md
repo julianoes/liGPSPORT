@@ -6,6 +6,16 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- Activity downloads could come out corrupted: same size as the
+  original, but failing the FIT CRC, so Strava rejects them. All four
+  TX channels were reassembled into one buffer, and the AGPS
+  ephemeris request the device sends on the control channel every
+  ~3 s got spliced into the FIT data streaming on the third channel.
+  Each channel now has its own buffer (``ligpsport.reassembly``), in
+  both the bleak and BlueZ transports. The Android app had the same
+  fix already.
+
 ### Added
 - ``ligpsport-gui``: a small Qt (PySide6) desktop app for Linux and
   macOS. Scans for bike computers on startup; pick one to download
